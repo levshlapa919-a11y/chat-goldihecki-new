@@ -195,22 +195,18 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
   var currentUser = null;
   var currentProfile = null;
   var activeUser = null;
-  var activeConv = null;
+  var activeConvId = null;
   var isAdmin = false;
 
   $('tLogin').onclick = function() {
     authMode = 'login';
-    $('tLogin').classList.add('active');
-    $('tSignup').classList.remove('active');
-    $('signupFields').classList.add('hidden');
-    $('authBtn').textContent = 'Войти в аккаунт';
+    $('tLogin').classList.add('active');$('tSignup').classList.remove('active');
+    $('signupFields').classList.add('hidden');$('authBtn').textContent = 'Войти в аккаунт';
   };
   $('tSignup').onclick = function() {
     authMode = 'signup';
-    $('tSignup').classList.add('active');
-    $('tLogin').classList.remove('active');
-    $('signupFields').classList.remove('hidden');
-    $('authBtn').textContent = 'Создать аккаунт';
+    $('tSignup').classList.add('active');$('tLogin').classList.remove('active');
+    $('signupFields').classList.remove('hidden');$('authBtn').textContent = 'Создать аккаунт';
   };
 
   $('authForm').onsubmit = function(e) {
@@ -230,8 +226,7 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
     } else {
       var username = $('regUser').value.trim().toLowerCase();
       var displayName = $('regName').value.trim() || username;
-      if (!/^[a-z0-9_]{3,20}$/.test(username)) {
-        $('authNotice').textContent = 'Юзернейм: 3–20 символов (латиница и цифры).';
+      if (!/^[a-z0-9_]{3,20}$/.test(username)) {$('authNotice').textContent = 'Юзернейм: 3–20 символов (латиница и цифры).';
         $('authNotice').className = 'notice error';
         return;
       }
@@ -253,12 +248,10 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
   function initApp(user) {
     currentUser = user;
     if (!user) {
-      $('authScreen').classList.remove('hidden');
-      $('appScreen').classList.add('hidden');
+      $('authScreen').classList.remove('hidden');$('appScreen').classList.add('hidden');
       return;
     }
-    $('authScreen').classList.add('hidden');
-    $('appScreen').classList.remove('hidden');
+    $('authScreen').classList.add('hidden');$('appScreen').classList.remove('hidden');
 
     db.from('profiles').select('*').eq('user_id', user.id).maybeSingle().then(function(res){
       if (res.data) {
@@ -269,20 +262,13 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
       }
     });
 
-    // Проверка админки (теперь проверяем и через RPC, и через возможный флаг в профиле)
-    db.rpc('is_current_user_admin').then(function(res){
-      isAdmin = (res.data === true);
-      $('adminBtn').classList.toggle('hidden', !isAdmin);
-    }).catch(function(){
-      isAdmin = false;
-      // Если RPC недоступен, проверяем по таблице profiles или разрешаем принудительно если нужно
-      db.from('profiles').select('is_admin').eq('user_id', user.id).maybeSingle().then(function(pRes){
-        if (pRes.data && pRes.data.is_admin) {
-          isAdmin = true;
-          $('adminBtn').classList.remove('hidden');
-        }
-      }).catch(function(){});
-    });
+    // Принудительно открываем админку для создателя или проверяем таблицу профилей
+    db.from('profiles').select('*').eq('user_id', user.id).maybeSingle().then(function(res){
+      if (res.data && (res.data.is_admin || res.data.is_creator || user.email === 'levshlapa919@gmail.com')) {
+        isAdmin = true;
+        $('adminBtn').classList.remove('hidden');
+      }
+    }).catch(function(){});
 
     loadChats('');
   }
@@ -318,6 +304,7 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
     });
   }
 
+  // Находим или создаем диалог напрямую через таблицы без RPC
   function openChat(uid) {
     db.from('profiles').select('*').eq('user_id', uid).single().then(function(res){
       if (res.error) return;
@@ -325,25 +312,36 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
       $('chatTitle').textContent = activeUser.display_name || activeUser.username;
       $('chatSub').textContent = '@' + activeUser.username;
       $('chatAvatar').textContent = (activeUser.display_name || activeUser.username)[0].toUpperCase();
-      $('appScreen').classList.add('inChat');
-      $('msgInput').disabled = false;
+      $('appScreen').classList.add('inChat');$('msgInput').disabled = false;
       $('sendBtn').disabled = false;
 
-      db.rpc('get_or_create_dm', {p_other_user: uid}).then(function(r){
-        if (r.error) throw r.error;
-        // Поддерживаем разные форматы возврата ID чата из RPC
-        var d = r.data;
-        activeConv = (typeof d === 'string') ? d : (d && (d.id || d.conversation_id || d.get_or_create_dm));
-        loadMessages();
-      }).catch(function(err){
-        alert('Ошибка открытия диалога: ' + (err.message || err));
+      // Ищем существующий чат между пользователями
+      db.from('conversations').select('*').or('and(user_eq.' + currentUser.id + ',user_b.eq.' + uid + '),and(user_a.eq.' + uid + ',user_b.eq.' + currentUser.id + ')').then(function(convRes){
+        var convs = convRes.data || [];
+        if (convs.length > 0) {
+          activeConvId = convs[0].id;
+          loadMessages();
+        } else {
+          // Создаем новый чат
+          db.from('conversations').insert({
+            user_a: currentUser.id,
+            user_b: uid,
+            last_message_at: new Date().toISOString()
+          }).select().single().then(function(newConv){
+            if (newConv.error) throw newConv.error;
+            activeConvId = newConv.data.id;
+            loadMessages();
+          }).catch(function(err){
+            alert('Не удалось создать диалог: ' + (err.message || err));
+          });
+        }
       });
     });
   }
 
   function loadMessages() {
-    if (!activeConv) return;
-    db.from('direct_messages').select('*').eq('conversation_id', activeConv).order('created_at', {ascending: true}).then(function(res){
+    if (!activeConvId) return;
+    db.from('direct_messages').select('*').eq('conversation_id', activeConvId).order('created_at', {ascending: true}).then(function(res){
       if (res.error) return;
       var msgs = res.data || [];
       var html = '';
@@ -357,21 +355,23 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
           '</div>';
       }
       $('msgContainer').innerHTML = html || '<div style="margin:auto;text-align:center;color:var(--muted)">Нет сообщений. Напишите первое!</div>';
-      $('msgContainer').scrollTop = $('msgContainer').scrollHeight;
+      $('msgContainer').scrollTop =$('msgContainer').scrollHeight;
     });
   }
 
   function sendMessage() {
     var txt = $('msgInput').value.trim();
-    if (!txt || !activeConv || !currentUser) return;
+    if (!txt || !activeConvId || !currentUser) return;
     db.from('direct_messages').insert({
-      conversation_id: activeConv,
+      conversation_id: activeConvId,
       sender_id: currentUser.id,
       content: txt
     }).then(function(res){
       if (res.error) throw res.error;
       $('msgInput').value = '';
       loadMessages();
+      // Обновляем время последнего сообщения в чате
+      db.from('conversations').update({last_message_at: new Date().toISOString()}).eq('id', activeConvId).then(function(){});
     }).catch(function(err){
       alert('Не удалось отправить сообщение: ' + (err.message || err));
     });
@@ -395,58 +395,4 @@ label{display:block;font-size:11px;color:var(--muted);margin:12px 0 5px;text-tra
     });
   }
 
-  $('mobileBack').onclick = function() { $('appScreen').classList.remove('inChat'); };
-  $('logoutBtn').onclick = function() { db.auth.signOut().then(function(){ window.location.reload(); }); };
-
-  $('profileBtn').onclick = function() {
-    if (!currentProfile) return;
-    $('editName').value = currentProfile.display_name || '';
-    $('editUser').value = currentProfile.username || '';
-    $('profileModal').classList.remove('hidden');
-  };
-  $('closeProfile').onclick = function() { $('profileModal').classList.add('hidden'); };
-  $('saveProfile').onclick = function() {
-    var name = $('editName').value.trim();
-    var uname = $('editUser').value.trim().toLowerCase();
-    db.from('profiles').update({display_name: name, username: uname}).eq('user_id', currentUser.id).then(function(res){
-      if (res.error) { alert('Ошибка: ' + res.error.message); return; }
-      $('profileModal').classList.add('hidden');
-      initApp(currentUser);
-    });
-  };
-
-  $('adminBtn').onclick = function() {
-    if (!isAdmin) return;
-    db.rpc('admin_list_users').then(function(res){
-      var list = res.data || [];
-      var html = '';
-      for (var i = 0; i < list.length; i++) {
-        var u = list[i];
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;background:#070908;padding:10px 14px;border-radius:10px;border:1px solid var(--line)">' +
-          '<div><strong>' + escapeHtml(u.display_name || u.username) + '</strong><div class="muted" style="font-size:11px">@' + escapeHtml(u.username) + '</div></div>' +
-          '<button class="btn btnDark" style="width:auto;margin:0;padding:6px 12px;font-size:11px;background:#3a2020;color:var(--red)" onclick="window.toggleUserBan(\'' + u.user_id + '\', ' + u.is_banned + ')">' + (u.is_banned ? 'Разбан' : 'Бан') + '</button></div>';
-      }
-      $('adminUsersList').innerHTML = html || 'Пользователи не найдены';
-      $('adminModal').classList.remove('hidden');
-    }).catch(function(err){
-      alert('Ошибка загрузки админ-панели: ' + (err.message || err));
-    });
-  };
-  $('closeAdmin').onclick = function() { $('adminModal').classList.add('hidden'); };
-
-  window.toggleUserBan = function(uid, isBanned) {
-    db.rpc('admin_set_moderation', {p_user_id: uid, p_is_banned: !isBanned, p_muted_until: null, p_reason: 'Админ'}).then(function(){
-      $('adminBtn').click();
-    });
-  };
-
-  db.auth.onAuthStateChange(function(evt, session) {
-    initApp(session ? session.user : null);
-  });
-  db.auth.getSession().then(function(res){
-    initApp(res.data.session ? res.data.session.user : null);
-  });
-})();
-</script>
-</body>
-</html>
+  $('mobileBack').onclick = function() { $('appScreen').classList.remove('inChat'); };$('logoutBtn').onclick = function() { db.
